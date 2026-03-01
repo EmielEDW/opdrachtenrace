@@ -23,8 +23,9 @@ const COLORS = ["#FF5733", "#3498DB", "#2ECC71", "#F39C12", "#9B59B6", "#E91E63"
 interface Team { id: number; name: string; color: string; score: number; }
 interface ActiveEntry { id: number; teamId: number; opdracht: string; points: number; assignedAt: string; }
 interface LogEntry { teamId: number; teamName: string; teamColor: string; opdracht: string; points: number; time: string; }
+interface OpdrachtenList { 3: string[]; 5: string[]; 8: string[]; }
 
-const OPDRACHTEN: Record<number, string[]> = {
+const DEFAULT_OPDRACHTEN: OpdrachtenList = {
   3: [
     "📸 Foto met wildvreemde (duim omhoog)",
     "📸 Straatnaambord met een dier erin",
@@ -113,18 +114,24 @@ export default function App() {
   const [teams, setTeams] = useFirebase<Team[]>("teams", defaultTeams);
   const [active, setActive] = useFirebase<ActiveEntry[]>("active", []);
   const [log, setLog] = useFirebase<LogEntry[]>("log", []);
+  const [opdrachten, setOpdrachten] = useFirebase<OpdrachtenList>("opdrachten", DEFAULT_OPDRACHTEN);
 
   const [view, setView] = useState<"scorebord" | "leiding">("scorebord");
   const [leidingUnlocked, setLeidingUnlocked] = useState(false);
   const [pwInput, setPwInput] = useState("");
   const [pwError, setPwError] = useState(false);
-  const [leidingTab, setLeidingTab] = useState<"toewijzen" | "teams">("toewijzen");
+  const [leidingTab, setLeidingTab] = useState<"toewijzen" | "teams" | "opdrachten">("toewijzen");
 
   const [aTeam, setATeam] = useState<Team | null>(null);
   const [aPts, setAPts] = useState<number | null>(null);
   const [aOp, setAOp] = useState<string | null>(null);
+
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState(COLORS[0]);
+
+  // Nieuwe opdracht toevoegen
+  const [newOpTekst, setNewOpTekst] = useState("");
+  const [newOpPts, setNewOpPts] = useState<3 | 5 | 8>(3);
 
   const sorted = [...teams].sort((a, b) => b.score - a.score);
   const maxScore = Math.max(...teams.map(t => t.score), 1);
@@ -158,10 +165,24 @@ export default function App() {
 
   const resetAll = () => { setTeams(teams.map(t => ({ ...t, score: 0 }))); setActive([]); setLog([]); };
 
+  const addOpdracht = () => {
+    if (!newOpTekst.trim()) return;
+    const updated = { ...opdrachten, [newOpPts]: [...opdrachten[newOpPts], newOpTekst.trim()] };
+    setOpdrachten(updated);
+    setNewOpTekst("");
+  };
+
+  const removeOpdracht = (pts: 3 | 5 | 8, index: number) => {
+    const updated = { ...opdrachten, [pts]: opdrachten[pts].filter((_: string, i: number) => i !== index) };
+    setOpdrachten(updated);
+  };
+
   const tryUnlock = () => {
     if (pwInput === LEIDING_PASSWORD) { setLeidingUnlocked(true); setPwError(false); }
     else { setPwError(true); setPwInput(""); }
   };
+
+  const ptsBorderColor = (pts: number) => pts === 3 ? "#2ECC71" : pts === 5 ? "#F39C12" : "#E74C3C";
 
   return (
     <div style={{ fontFamily: "'Bebas Neue', 'Impact', sans-serif", background: "#0d0d0d", minHeight: "100vh", color: "#fff" }}>
@@ -178,7 +199,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* SCOREBORD */}
+      {/* ── SCOREBORD ── */}
       {view === "scorebord" && (
         <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 16px" }}>
           <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#444", textAlign: "center", marginBottom: 28, letterSpacing: 1 }}>LIVE STAND · vernieuwt automatisch</div>
@@ -230,7 +251,7 @@ export default function App() {
         </div>
       )}
 
-      {/* LEIDING: WACHTWOORD */}
+      {/* ── LEIDING: WACHTWOORD ── */}
       {view === "leiding" && !leidingUnlocked && (
         <div style={{ maxWidth: 360, margin: "80px auto", padding: "0 20px", textAlign: "center" }}>
           <div style={{ fontSize: 48, marginBottom: 8 }}>🔒</div>
@@ -243,17 +264,18 @@ export default function App() {
         </div>
       )}
 
-      {/* LEIDING: PANEEL */}
+      {/* ── LEIDING: PANEEL ── */}
       {view === "leiding" && leidingUnlocked && (
         <div style={{ maxWidth: 640, margin: "0 auto", padding: "24px 16px" }}>
-          <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
-            {(["toewijzen", "teams"] as const).map(t => (
+          <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
+            {(["toewijzen", "opdrachten", "teams"] as const).map(t => (
               <button key={t} onClick={() => setLeidingTab(t)} style={{ fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 2, fontSize: 15, padding: "10px 20px", borderRadius: 8, border: "none", cursor: "pointer", background: leidingTab === t ? "#fff" : "#1e1e1e", color: leidingTab === t ? "#0d0d0d" : "#666" }}>
-                {t === "toewijzen" ? "📋 Opdrachten" : "👥 Teams"}
+                {t === "toewijzen" ? "📋 Toewijzen" : t === "opdrachten" ? "✏️ Opdrachten" : "👥 Teams"}
               </button>
             ))}
           </div>
 
+          {/* ── TAB: TOEWIJZEN ── */}
           {leidingTab === "toewijzen" && (<>
             {active.length > 0 && (
               <div style={{ marginBottom: 32 }}>
@@ -299,7 +321,7 @@ export default function App() {
               <Label>2. Moeilijkheid?</Label>
               <div style={{ display: "flex", gap: 8 }}>
                 {([3, 5, 8] as const).map(pts => {
-                  const col = pts === 3 ? "#2ECC71" : pts === 5 ? "#F39C12" : "#E74C3C";
+                  const col = ptsBorderColor(pts);
                   return (
                     <button key={pts} onClick={() => { setAPts(pts); setAOp(null); }} style={{ fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 1, fontSize: 18, padding: "12px 22px", borderRadius: 8, cursor: "pointer", border: `2px solid ${aPts === pts ? col : "#333"}`, background: aPts === pts ? col + "22" : "#161616", color: aPts === pts ? col : "#888" }}>
                       {"⭐".repeat(pts === 3 ? 1 : pts === 5 ? 2 : 3)} {pts}
@@ -313,7 +335,7 @@ export default function App() {
               <div style={{ marginBottom: 24 }}>
                 <Label>3. Welke opdracht?</Label>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 300, overflowY: "auto" }}>
-                  {OPDRACHTEN[aPts].map(op => (
+                  {opdrachten[aPts as 3 | 5 | 8].map((op: string) => (
                     <button key={op} onClick={() => setAOp(op)} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 14, padding: "11px 14px", borderRadius: 8, cursor: "pointer", textAlign: "left", border: `2px solid ${aOp === op ? "#fff" : "#222"}`, background: aOp === op ? "#2a2a2a" : "#161616", color: aOp === op ? "#fff" : "#888" }}>
                       {op}
                     </button>
@@ -327,6 +349,56 @@ export default function App() {
             </Btn>
           </>)}
 
+          {/* ── TAB: OPDRACHTEN BEHEREN ── */}
+          {leidingTab === "opdrachten" && (<>
+            {/* Nieuwe opdracht toevoegen */}
+            <Label>Nieuwe opdracht toevoegen</Label>
+            <Card style={{ marginBottom: 28 }}>
+              <textarea
+                value={newOpTekst}
+                onChange={e => setNewOpTekst(e.target.value)}
+                placeholder="Beschrijf de opdracht... (je kan 📸 🎒 ✍️ gebruiken)"
+                rows={2}
+                style={{ width: "100%", padding: "11px 14px", borderRadius: 8, border: "2px solid #333", background: "#0d0d0d", color: "#fff", fontFamily: "'DM Sans',sans-serif", fontSize: 14, boxSizing: "border-box", marginBottom: 12, resize: "vertical" }}
+              />
+              <div style={{ display: "flex", gap: 8, marginBottom: 14, alignItems: "center" }}>
+                <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "#555" }}>Punten:</span>
+                {([3, 5, 8] as const).map(pts => {
+                  const col = ptsBorderColor(pts);
+                  return (
+                    <button key={pts} onClick={() => setNewOpPts(pts)} style={{ fontFamily: "'Bebas Neue',sans-serif", fontSize: 16, padding: "8px 16px", borderRadius: 8, cursor: "pointer", border: `2px solid ${newOpPts === pts ? col : "#333"}`, background: newOpPts === pts ? col + "22" : "#161616", color: newOpPts === pts ? col : "#888" }}>
+                      {"⭐".repeat(pts === 3 ? 1 : pts === 5 ? 2 : 3)} {pts}
+                    </button>
+                  );
+                })}
+              </div>
+              <Btn onClick={addOpdracht} disabled={!newOpTekst.trim()} color="#000" bg="#2ECC71" full>+ OPDRACHT TOEVOEGEN</Btn>
+            </Card>
+
+            {/* Bestaande opdrachten per niveau */}
+            {([3, 5, 8] as const).map(pts => {
+              const col = ptsBorderColor(pts);
+              const label = pts === 3 ? "⭐ 3 punten" : pts === 5 ? "⭐⭐ 5 punten" : "⭐⭐⭐ 8 punten";
+              return (
+                <div key={pts} style={{ marginBottom: 28 }}>
+                  <div style={{ fontSize: 18, letterSpacing: 3, color: col, marginBottom: 10 }}>{label}</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {opdrachten[pts].map((op: string, i: number) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, background: "#161616", border: "1px solid #222", borderRadius: 8, padding: "10px 14px" }}>
+                        <div style={{ flex: 1, fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "#bbb" }}>{op}</div>
+                        <button onClick={() => removeOpdracht(pts, i)} style={{ background: "none", border: "none", color: "#555", fontSize: 16, cursor: "pointer", flexShrink: 0 }}>🗑️</button>
+                      </div>
+                    ))}
+                    {opdrachten[pts].length === 0 && (
+                      <div style={{ fontFamily: "'DM Sans',sans-serif", color: "#444", fontSize: 13, padding: "12px 0" }}>Geen opdrachten voor dit niveau.</div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </>)}
+
+          {/* ── TAB: TEAMS ── */}
           {leidingTab === "teams" && (<>
             <Label>Huidige teams</Label>
             <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 28 }}>
