@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { ReactNode } from "react";
 import { initializeApp } from "firebase/app";
 import { getDatabase, ref, onValue, set } from "firebase/database";
@@ -76,17 +76,55 @@ const defaultTeams: Team[] = [
   { id: 2, name: "Team Blauw", color: COLORS[1], score: 0 },
 ];
 
+// Firebase soms geeft objects terug i.p.v. arrays — zet om naar array
+function toArray<T>(val: unknown): T[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val as T[];
+  if (typeof val === "object") return Object.values(val) as T[];
+  return [];
+}
+
 function useFirebase<T>(path: string, def: T): [T, (v: T) => void] {
   const [val, setVal] = useState<T>(def);
+
   useEffect(() => {
     const r = ref(db, path);
-    const unsub = onValue(r, snap => {
-      if (snap.exists()) setVal(snap.val());
+    const unsub = onValue(r, (snap) => {
+      if (snap.exists()) {
+        const raw = snap.val();
+        // Als het verwachte type een array is, zeker omzetten
+        const parsed = Array.isArray(def) ? toArray(raw) : raw;
+        setVal(parsed as T);
+      }
+      // Als het pad niet bestaat in Firebase, lokale state ongewijzigd laten
     });
     return () => unsub();
+  }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = useCallback((v: T) => {
+    // Optimistische lokale update — UI reageert meteen
+    setVal(v);
+    // Schrijf naar Firebase: lege array → null (Firebase verwijdert lege nodes)
+    const toWrite = (Array.isArray(v) && (v as unknown[]).length === 0) ? null : v;
+    set(ref(db, path), toWrite).catch((err: Error) => {
+      console.error(`Firebase schrijffout (${path}):`, err.message);
+    });
   }, [path]);
-  const save = (v: T) => { set(ref(db, path), v); };
+
   return [val, save];
+}
+
+// Firebase verbindingsstatus bijhouden
+function useFirebaseConnected(): boolean | null {
+  const [connected, setConnected] = useState<boolean | null>(null);
+  useEffect(() => {
+    const connRef = ref(db, ".info/connected");
+    const unsub = onValue(connRef, (snap) => {
+      setConnected(snap.val() === true);
+    });
+    return () => unsub();
+  }, []);
+  return connected;
 }
 
 // ── UI helpers ───────────────────────────────────────────────────────────────
@@ -115,6 +153,7 @@ export default function App() {
   const [active, setActive] = useFirebase<ActiveEntry[]>("active", []);
   const [log, setLog] = useFirebase<LogEntry[]>("log", []);
   const [opdrachten, setOpdrachten] = useFirebase<OpdrachtenList>("opdrachten", DEFAULT_OPDRACHTEN);
+  const connected = useFirebaseConnected();
 
   const [view, setView] = useState<"scorebord" | "leiding">("scorebord");
   const [leidingUnlocked, setLeidingUnlocked] = useState(false);
@@ -129,9 +168,10 @@ export default function App() {
   const [editName, setEditName] = useState("");
   const [editColor, setEditColor] = useState(COLORS[0]);
 
-  // Nieuwe opdracht toevoegen
   const [newOpTekst, setNewOpTekst] = useState("");
   const [newOpPts, setNewOpPts] = useState<3 | 5 | 8>(3);
+
+  const [resetConfirm, setResetConfirm] = useState(false);
 
   const sorted = [...teams].sort((a, b) => b.score - a.score);
   const maxScore = Math.max(...teams.map(t => t.score), 1);
@@ -163,7 +203,12 @@ export default function App() {
     setActive(active.filter(a => a.teamId !== id));
   };
 
-  const resetAll = () => { setTeams(teams.map(t => ({ ...t, score: 0 }))); setActive([]); setLog([]); };
+  const resetAll = () => {
+    setTeams(teams.map(t => ({ ...t, score: 0 })));
+    setActive([]);
+    setLog([]);
+    setResetConfirm(false);
+  };
 
   const addOpdracht = () => {
     if (!newOpTekst.trim()) return;
@@ -188,8 +233,22 @@ export default function App() {
     <div style={{ fontFamily: "'Bebas Neue', 'Impact', sans-serif", background: "#0d0d0d", minHeight: "100vh", color: "#fff" }}>
       <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@400;600&display=swap" rel="stylesheet" />
 
+      {/* ── HEADER ── */}
       <div style={{ background: "#111", borderBottom: "2px solid #1e1e1e", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 24, letterSpacing: 4 }}>🏆 OPDRACHTENRACE</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontSize: 24, letterSpacing: 4 }}>🏆 OPDRACHTENRACE</div>
+          {/* Verbindingsindicator */}
+          <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <div style={{
+              width: 8, height: 8, borderRadius: "50%",
+              background: connected === null ? "#555" : connected ? "#2ECC71" : "#E74C3C",
+              boxShadow: connected ? "0 0 6px #2ECC71" : "none",
+            }} />
+            <span style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: connected === null ? "#555" : connected ? "#2ECC71" : "#E74C3C", letterSpacing: 1 }}>
+              {connected === null ? "VERBINDEN..." : connected ? "LIVE" : "OFFLINE"}
+            </span>
+          </div>
+        </div>
         <div style={{ display: "flex", gap: 8 }}>
           {(["scorebord", "leiding"] as const).map(v => (
             <button key={v} onClick={() => setView(v)} style={{ fontFamily: "'Bebas Neue', sans-serif", letterSpacing: 2, fontSize: 13, padding: "8px 16px", borderRadius: 6, border: "none", cursor: "pointer", background: view === v ? "#fff" : "#1e1e1e", color: view === v ? "#0d0d0d" : "#666" }}>
@@ -198,6 +257,13 @@ export default function App() {
           ))}
         </div>
       </div>
+
+      {/* Offline waarschuwing */}
+      {connected === false && (
+        <div style={{ background: "#E74C3C22", borderBottom: "1px solid #E74C3C44", padding: "10px 20px", textAlign: "center", fontFamily: "'DM Sans',sans-serif", fontSize: 13, color: "#E74C3C" }}>
+          ⚠️ Geen verbinding met Firebase — wijzigingen worden niet opgeslagen. Controleer je internet of de Firebase-beveiligingsregels.
+        </div>
+      )}
 
       {/* ── SCOREBORD ── */}
       {view === "scorebord" && (
@@ -351,7 +417,6 @@ export default function App() {
 
           {/* ── TAB: OPDRACHTEN BEHEREN ── */}
           {leidingTab === "opdrachten" && (<>
-            {/* Nieuwe opdracht toevoegen */}
             <Label>Nieuwe opdracht toevoegen</Label>
             <Card style={{ marginBottom: 28 }}>
               <textarea
@@ -375,7 +440,6 @@ export default function App() {
               <Btn onClick={addOpdracht} disabled={!newOpTekst.trim()} color="#000" bg="#2ECC71" full>+ OPDRACHT TOEVOEGEN</Btn>
             </Card>
 
-            {/* Bestaande opdrachten per niveau */}
             {([3, 5, 8] as const).map(pts => {
               const col = ptsBorderColor(pts);
               const label = pts === 3 ? "⭐ 3 punten" : pts === 5 ? "⭐⭐ 5 punten" : "⭐⭐⭐ 8 punten";
@@ -424,9 +488,22 @@ export default function App() {
               <Btn onClick={addTeam} disabled={!editName.trim()} color="#000" bg={editColor} full>+ TEAM TOEVOEGEN</Btn>
             </Card>
 
+            {/* Reset spel */}
             <div style={{ borderTop: "1px solid #222", paddingTop: 20 }}>
               <Label>⚠️ Gevaarzone</Label>
-              <Btn onClick={resetAll} color="#E74C3C" bg="#E74C3C11">🗑️ Reset heel het spel</Btn>
+              {!resetConfirm ? (
+                <Btn onClick={() => setResetConfirm(true)} color="#E74C3C" bg="#E74C3C11">🗑️ Reset heel het spel</Btn>
+              ) : (
+                <div style={{ background: "#E74C3C11", border: "1px solid #E74C3C44", borderRadius: 10, padding: "16px 18px" }}>
+                  <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 14, color: "#E74C3C", marginBottom: 14 }}>
+                    ⚠️ Ben je zeker? Dit wist alle scores, actieve opdrachten en het logboek. Teams blijven bestaan.
+                  </div>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <Btn onClick={resetAll} color="#fff" bg="#E74C3C">Ja, reset alles</Btn>
+                    <Btn onClick={() => setResetConfirm(false)} color="#888" bg="#1e1e1e">Annuleer</Btn>
+                  </div>
+                </div>
+              )}
             </div>
           </>)}
         </div>
